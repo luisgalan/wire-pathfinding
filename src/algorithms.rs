@@ -196,7 +196,16 @@ pub fn greedy_pathfind(start: Vec2, goal: Vec2, rects: &[Rect]) -> Option<Vec<Ve
     return None;
 }
 
+/// BVH accelerated pathfinding algorithm
+/// Same as `greedy_pathfind` but with BVH for faster raycasts
+/// Overall idea:
+/// Perform A*, but instead of adding all visible neighbors, we lazily add them when needed
+/// This is done in a couple of ways:
+/// 1) Raycasting from current node to the goal, adding all 4 vertices of a single blocking obstacle to the open set (if there is one)
+/// 2) Raycasting from the current node to its parent, adding all 4 vertices of a single blocking obstacle to the open set (if there is one)
 pub fn bvh_pathfind(start: Vec2, goal: Vec2, rects: &[Rect], bvh: &Bvh) -> Option<Vec<Vec2>> {
+    // Start by assigning an index to all points
+    // This could be moved outside the function and re-used between pathfinds (it's O(N)) but i'm lazy
     let mut points = vec![start, goal];
     let mut rect_corners = Vec::new();
     let start_idx = 0;
@@ -217,21 +226,24 @@ pub fn bvh_pathfind(start: Vec2, goal: Vec2, rects: &[Rect], bvh: &Bvh) -> Optio
         rect_corners.push([idx, idx + 1, idx + 2, idx + 3]);
     }
 
-    let mut queue = BinaryHeap::new();
-    let mut dist = HashMap::new();
-    let mut came_from = HashMap::new();
+    // Initialize priority queue and distance map for A*
+    let mut queue = BinaryHeap::new(); // open set
+    let mut dist = HashMap::new(); // path length
+    let mut came_from = HashMap::new(); // node parent map
+
+    // Unlike regular A* we keep track of the parent node in the priority queue,
+    // then write to the distance map and parent map later
+    // This allows us to add invalid (node, parent) pairs to the queue and check them later lazily, but at the cost of extra queue operations
 
     // Initialize start node
     dist.insert(start_idx, 0.0);
 
-    // Raycast from start to goal
+    // Raycast from start to goal and add corners of a blocking obstacle
     if let Some(rect_idx) = bvh.raycast(start, goal) {
         for corner in rect_corners[rect_idx] {
-            queue.push(MinHeapEntry(
-                (corner, start_idx),
-                (points[start_idx] - points[corner]).length() // dist
-                    + (points[corner] - points[goal_idx]).length(), // A* heuristic
-            ));
+            let next_dist = (points[start_idx] - points[corner]).length(); // Distance to parent
+            let heuristic = (points[corner] - points[goal_idx]).length(); // A* heuristic
+            queue.push(MinHeapEntry((corner, start_idx), next_dist + heuristic));
         }
     } else {
         // Goal directly reachable
@@ -247,34 +259,36 @@ pub fn bvh_pathfind(start: Vec2, goal: Vec2, rects: &[Rect], bvh: &Bvh) -> Optio
         let cur_dist = dist[&parent] + (points[parent] - points[current]).length();
 
         if dist.contains_key(&current) && dist[&current] <= cur_dist {
+            // There's already a shorter path to this node
             continue;
         }
 
+        // VALIDATE: Check if parent -> current is actually traversable
         if let Some(rect_idx) = bvh.raycast(points[parent], points[current]) {
-            // Current node not visible from parent
+            // Current node not visible from parent, something is blocking
+            // We need to add the vertices of a blocking rectangle to the queue, otherwise we might not find a path
+            // Note that if the raycast node is the current node, we don't need to add it to the queue
+            // If we don't skip that case, we can end up adding the same nodes to the queue forever
             if !rect_corners[rect_idx].contains(&current) {
                 for corner in rect_corners[rect_idx] {
-                    // if corner == current {
-                    //     continue;
-                    // }
-                    queue.push(MinHeapEntry(
-                        (corner, parent),
-                        dist[&parent]
-                            + (points[parent] - points[corner]).length()
-                            + (points[corner] - points[goal_idx]).length(),
-                    ));
+                    let next_dist = dist[&parent] + (points[parent] - points[corner]).length();
+                    let heuristic = (points[corner] - points[goal_idx]).length();
+                    queue.push(MinHeapEntry((corner, parent), next_dist + heuristic));
                 }
             }
+            // Don't mark `current` as visited - it's not actually reachable from the parent
             continue;
         };
 
+        // We now know this (node, parent) pair is valid, so we record its distance and parent
         dist.insert(current, cur_dist);
         came_from.insert(current, parent);
 
+        // It might be possible to smoothen the path by removing unnecessary nodes from it.
         // Check if path can be improved by walking directly from parent's parent to the current node
         if let Some(grandparent) = came_from.get(&parent) {
             if bvh.raycast(points[*grandparent], points[current]).is_none() {
-                // Direct path from grandparent to current node is visible, prune path
+                // Direct path from grandparent to current node is visible, shorten path
                 dist.insert(
                     current,
                     dist[grandparent] + (points[current] - points[*grandparent]).length(),
@@ -284,7 +298,7 @@ pub fn bvh_pathfind(start: Vec2, goal: Vec2, rects: &[Rect], bvh: &Bvh) -> Optio
         }
 
         if current == goal_idx {
-            // Goal reached
+            // Goal reached, reconstruct path
             let mut path = vec![goal];
             let mut current = goal_idx;
             while let Some(parent) = came_from.get(&current) {
@@ -296,6 +310,9 @@ pub fn bvh_pathfind(start: Vec2, goal: Vec2, rects: &[Rect], bvh: &Bvh) -> Optio
             return Some(path);
         }
 
+        // EXPAND: Find next obstacles toward goal
+        // This is done greedily by raycasting directly to the goal and adding only the corners of a single blocking obstacle to the queue.
+        // Note that these vertices may be blocked by an arbitrary number of other obstacles, but we add them to the queue anyway and check them later (lazily).
         // Raycast from current to goal
         if let Some(rect_idx) = bvh.raycast(points[current], points[goal_idx]) {
             // Current node not visible from goal
@@ -303,14 +320,10 @@ pub fn bvh_pathfind(start: Vec2, goal: Vec2, rects: &[Rect], bvh: &Bvh) -> Optio
                 if corner == current {
                     continue;
                 }
-                queue.push(MinHeapEntry(
-                    (corner, current),
-                    cur_dist
-                        + (points[current] - points[corner]).length()
-                        + (points[corner] - points[goal_idx]).length(),
-                ));
+                let next_dist = cur_dist + (points[current] - points[corner]).length();
+                let heuristic = (points[corner] - points[goal_idx]).length();
+                queue.push(MinHeapEntry((corner, current), next_dist + heuristic));
             }
-            continue;
         } else {
             // Goal is visible from current node
             queue.push(MinHeapEntry(
