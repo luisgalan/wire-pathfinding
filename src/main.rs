@@ -192,16 +192,17 @@ fn naive_pathfind(start: Vec2, goal: Vec2, rects: &[Rect]) -> Option<Vec<Vec2>> 
     None
 }
 
-fn distance(a: Vec2, b: Vec2) -> f32 {
-    (a - b).length()
-}
-
 fn greedy_pathfind(start: Vec2, goal: Vec2, rects: &[Rect]) -> Option<Vec<Vec2>> {
     let mut points = vec![start, goal];
     let mut rect_corners = Vec::new();
     let start_idx = 0;
     let goal_idx = 1;
     for rect in rects {
+        // Check if goal is impossible to reach
+        if rect.contains(goal) {
+            return None;
+        }
+
         // Add rect's corners to points with a bit of padding
         let eps = 0.01;
         let idx = points.len();
@@ -225,8 +226,8 @@ fn greedy_pathfind(start: Vec2, goal: Vec2, rects: &[Rect]) -> Option<Vec<Vec2>>
         for corner in rect_corners[hit.rect_idx] {
             queue.push(MinHeapEntry(
                 (corner, start_idx),
-                distance(points[start_idx], points[corner]) // dist
-                    + distance(points[corner], points[goal_idx]), // A* heuristic
+                (points[start_idx] - points[corner]).length() // dist
+                    + (points[corner] - points[goal_idx]).length(), // A* heuristic
             ));
         }
     } else {
@@ -240,25 +241,29 @@ fn greedy_pathfind(start: Vec2, goal: Vec2, rects: &[Rect]) -> Option<Vec<Vec2>>
     while let Some(MinHeapEntry((current, parent), _)) = queue.pop() {
         nodes_expanded += 1;
 
-        let cur_dist = dist[&parent] + distance(points[parent], points[current]);
-        // println!("Current: {}, Parent: {}, cost: {}", current, parent, cost);
-        // println!("Queue size: {}", queue.len());
+        let cur_dist = dist[&parent] + (points[parent] - points[current]).length();
+        // if nodes_expanded > 1000 {
+        //     println!("Current: {}, Parent: {}", current, parent);
+        //     println!("Queue size: {}", queue.len());
+        // }
         if dist.contains_key(&current) && dist[&current] <= cur_dist {
             continue;
         }
 
         if let Some(hit) = raycast(points[parent], points[current], &rects) {
             // Current node not visible from parent
-            for corner in rect_corners[hit.rect_idx] {
-                if corner == current {
-                    continue;
+            if !rect_corners[hit.rect_idx].contains(&current) {
+                for corner in rect_corners[hit.rect_idx] {
+                    // if corner == current {
+                    //     continue;
+                    // }
+                    queue.push(MinHeapEntry(
+                        (corner, parent),
+                        dist[&parent]
+                            + (points[parent] - points[corner]).length()
+                            + (points[corner] - points[goal_idx]).length(),
+                    ));
                 }
-                queue.push(MinHeapEntry(
-                    (corner, parent),
-                    dist[&parent]
-                        + distance(points[parent], points[corner])
-                        + distance(points[corner], points[goal_idx]),
-                ));
             }
             continue;
         };
@@ -327,26 +332,26 @@ async fn main() {
     //     Rect::new(200.0, 250.0, 50.0, 100.0),
     // ];
 
-    // Evenly spaced rectangles
-    let mut rects = Vec::new();
-    let scale = 10.0;
-    for i in 1..40 {
-        for j in 1..40 {
-            rects.push(Rect::new(
-                i as f32 * scale + scale / 2.0,
-                j as f32 * scale + scale / 2.0,
-                scale / 2.0,
-                scale / 2.0,
-            ));
-        }
-    }
+    // // Evenly spaced rectangles
+    // let mut rects = Vec::new();
+    // let scale = 8.0;
+    // for i in 1..50 {
+    //     for j in 1..50 {
+    //         rects.push(Rect::new(
+    //             i as f32 * scale + scale / 2.0,
+    //             j as f32 * scale + scale / 2.0,
+    //             scale / 2.0,
+    //             scale / 2.0,
+    //         ));
+    //     }
+    // }
 
-    // Randomly placed rectangles
+    // // Randomly placed rectangles
     // let mut rects = Vec::new();
     // rand::srand(42);
-    // let scale = 40.0;
-    // for i in 1..10 {
-    //     for j in 1..10 {
+    // let scale = 10.0;
+    // for i in 1..100 {
+    //     for j in 1..100 {
     //         rects.push(Rect::new(
     //             i as f32 * scale + rand::gen_range(-scale / 5.0, scale / 5.0),
     //             j as f32 * scale + rand::gen_range(-scale / 5.0, scale / 5.0),
@@ -355,6 +360,35 @@ async fn main() {
     //         ));
     //     }
     // }
+
+    // Randomly placed/sized rectangles
+    let mut rects = Vec::new();
+    rand::srand(42);
+    let scale = 5.0;
+    for i in 1..150 {
+        for j in 1..150 {
+            let new_rect = Rect::new(
+                i as f32 * scale + rand::gen_range(-scale / 5.0, scale / 5.0),
+                j as f32 * scale + rand::gen_range(-scale / 5.0, scale / 5.0),
+                rand::gen_range(0.5, 10.0) * scale / 2.0,
+                rand::gen_range(0.5, 10.0) * scale / 2.0,
+            );
+            let eps = 0.1;
+            let padded_rect = Rect::new(
+                new_rect.x - eps,
+                new_rect.y - eps,
+                new_rect.w + 2.0 * eps,
+                new_rect.h + 2.0 * eps,
+            );
+            let mut overlap = false;
+            for rect in &rects {
+                overlap |= padded_rect.overlaps(&rect);
+            }
+            if !overlap {
+                rects.push(new_rect);
+            }
+        }
+    }
 
     loop {
         clear_background(WHITE);
