@@ -203,6 +203,8 @@ pub fn greedy_pathfind(start: Vec2, goal: Vec2, rects: &[Rect]) -> Option<Vec<Ve
 /// This is done in a couple of ways:
 /// 1) Raycasting from current node to the goal, adding all 4 vertices of a single blocking obstacle to the open set (if there is one)
 /// 2) Raycasting from the current node to its parent, adding all 4 vertices of a single blocking obstacle to the open set (if there is one)
+/// Note that the raycast doesn't necessarily need to give the closest hit, the algorithm will still work correctly.
+/// It's generally a lot faster if the raycast gives hits that aren't super far away though.
 pub fn bvh_pathfind(start: Vec2, goal: Vec2, rects: &[Rect], bvh: &Bvh) -> Option<Vec<Vec2>> {
     // Start by assigning an index to all points
     // This could be moved outside the function and re-used between pathfinds (it's O(N)) but i'm lazy
